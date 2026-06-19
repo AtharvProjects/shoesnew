@@ -532,50 +532,101 @@ function BillingCounter({ counterIndex, editId, onClearEdit }: { counterIndex: n
 
           msg += channelLink;
           
-          // Generate PDF Receipt
-          const jsPDFModule = await import('jspdf');
-          const JsPDF = (jsPDFModule.jsPDF ?? jsPDFModule.default ?? jsPDFModule) as any;
-          const doc = new JsPDF();
-          const autoTableMod = await import('jspdf-autotable');
-          const autoTable = (autoTableMod.default ?? autoTableMod) as any;
-          
-          doc.setFontSize(22);
-          doc.setFont('helvetica', 'bold');
-          doc.text(settings.store_name || 'Footwear Store', 14, 22);
-          
-          doc.setFontSize(10);
-          doc.setFont('helvetica', 'normal');
-          doc.text(`${t('Invoice')} No: ${data.invoice.invoice_number}`, 14, 32);
-          doc.text(`${t('Date')}: ${new Date().toLocaleDateString('en-IN')}`, 14, 38);
-          doc.text(`${t('Customer Details')}: ${customerName || t('Walk-in Customer')}`, 14, 44);
-          if (customerPhone) doc.text(`${t('Phone')}: ${customerPhone}`, 14, 50);
-          
-          autoTable(doc, {
-            startY: 58,
-            head: [[t('Product'), t('Qty'), t('Rate'), t('Total')]],
-            body: items.map(i => [
-              i.product_name,
-              i.quantity.toString(),
-              i.price.toFixed(2),
-              i.total.toFixed(2)
-            ]),
-            headStyles: { fillColor: [41, 128, 185] },
-            margin: { left: 14, right: 14 }
-          });
-          
-          const finalY = (doc as any).lastAutoTable.finalY || 60;
-          doc.setFontSize(11);
-          doc.setFont('helvetica', 'bold');
-          doc.text(`${t('Subtotal')}: Rs. ${totals.subtotal.toFixed(2)}`, 130, finalY + 10);
-          if (totals.final_discount > 0) {
-            doc.text(`${t('Discount')}: Rs. ${totals.final_discount.toFixed(2)}`, 130, finalY + 16);
-            doc.text(`${t('Total')}: Rs. ${totals.total_amount.toFixed(2)}`, 130, finalY + 22);
-          } else {
-            doc.text(`${t('Total')}: Rs. ${totals.total_amount.toFixed(2)}`, 130, finalY + 16);
+          // Generate PDF Receipt using print layout
+          let mediaBase64 = null;
+          let fileName = null;
+          try {
+            const iframe = document.createElement('iframe');
+            iframe.style.position = 'absolute';
+            iframe.style.width = '1000px'; 
+            iframe.style.height = '1414px';
+            iframe.style.top = '-9999px';
+            iframe.style.left = '-9999px';
+            
+            iframe.src = `/invoices/print/${data.invoice.id}?noprint=true`;
+            document.body.appendChild(iframe);
+            
+            let printArea: HTMLElement | null = null;
+            let iframeDoc: Document | null = null;
+            
+            // Poll for up to 5 seconds to find print-area
+            for (let i = 0; i < 50; i++) {
+              await new Promise(r => setTimeout(r, 100));
+              try {
+                iframeDoc = iframe.contentDocument || iframe.contentWindow?.document || null;
+                printArea = iframeDoc?.getElementById('print-area') || null;
+                if (printArea) {
+                  // Found it! Wait an additional 1 second for images/fonts to settle
+                  await new Promise(r => setTimeout(r, 1000));
+                  break;
+                }
+              } catch (e) {
+                // Ignore potential cross-origin access errors during initial load
+              }
+            }
+            
+            if (printArea && iframeDoc) {
+              // Clone the print area into the main document to avoid cross-iframe issues with html2canvas
+              const clone = printArea.cloneNode(true) as HTMLElement;
+              clone.style.position = 'absolute';
+              clone.style.top = '0px';
+              clone.style.left = '0px';
+              clone.style.margin = '0px';
+              clone.style.padding = '0px';
+              clone.style.width = '794px'; // 210mm at 96dpi
+              clone.style.zIndex = '-9999';
+              clone.style.pointerEvents = 'none';
+              
+              // Copy all stylesheets from iframe into a <style> block
+              const styles = Array.from(iframeDoc.querySelectorAll('style, link[rel="stylesheet"]'));
+              const styleContainer = document.createElement('div');
+              styleContainer.id = '__pdf-styles__';
+              for (const s of styles) {
+                styleContainer.appendChild(s.cloneNode(true));
+              }
+              document.head.appendChild(styleContainer);
+              document.body.appendChild(clone);
+              
+              // Give browser a moment to apply styles
+              await new Promise(r => setTimeout(r, 200));
+
+              const html2canvas = (await import('html2canvas-pro')).default;
+              const canvas = await html2canvas(clone, {
+                scale: 2,
+                useCORS: true,
+                logging: false,
+              });
+              
+              // Clean up cloned elements
+              document.body.removeChild(clone);
+              document.head.removeChild(styleContainer);
+              
+              const imgData = canvas.toDataURL('image/jpeg', 0.95);
+              const mod = await import('jspdf');
+              const JsPDF = (mod.jsPDF ?? mod.default ?? mod) as any;
+              
+              const pdfWidth = 210; // Standard A4 width in mm
+              const pdfHeight = Math.max((canvas.height * pdfWidth) / canvas.width, 100);
+              
+              const pdf = new JsPDF({
+                orientation: 'p',
+                unit: 'mm',
+                format: [pdfWidth, pdfHeight]
+              });
+              
+              pdf.addImage(imgData, 'JPEG', 0, 0, pdfWidth, pdfHeight);
+              mediaBase64 = pdf.output('datauristring').split(',')[1];
+              fileName = `${data.invoice.invoice_number || 'invoice'}.pdf`;
+            } else {
+              console.error("printArea not found inside iframe after 5 seconds.");
+              toast.error("Failed to load printable invoice area. Proceeding with message only.");
+            }
+            document.body.removeChild(iframe);
+          } catch (e: any) {
+            console.error("Failed to generate PDF for attachment:", e);
+            const errStr = e?.message || (typeof e === 'string' ? e : JSON.stringify(e));
+            toast.error("Error generating PDF: " + errStr);
           }
-          
-          const mediaBase64 = doc.output('datauristring').split(',')[1];
-          const fileName = `${data.invoice.invoice_number}.pdf`;
 
           const waRes = await fetch('/api/whatsapp/send', {
             method: 'POST',

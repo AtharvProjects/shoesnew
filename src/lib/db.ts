@@ -143,6 +143,33 @@ if (process.env.NEXT_PHASE === 'phase-production-build') {
     FOREIGN KEY (product_id) REFERENCES products(id)
   );
 
+
+  -- Dealers (Khatabook)
+  CREATE TABLE IF NOT EXISTS dealers (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    phone TEXT DEFAULT '',
+    address TEXT DEFAULT '',
+    gstin TEXT DEFAULT '',
+    balance REAL DEFAULT 0, -- Positive means we owe them (payable), Negative means they owe us (receivable)
+    created_at TEXT DEFAULT (datetime('now')),
+    updated_at TEXT DEFAULT (datetime('now'))
+  );
+
+  -- Dealer Transactions (Khatabook entries)
+  CREATE TABLE IF NOT EXISTS dealer_transactions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    dealer_id INTEGER NOT NULL,
+    type TEXT NOT NULL, -- 'purchase', 'payment_given', 'purchase_return', 'opening_balance'
+    amount REAL NOT NULL DEFAULT 0,
+    balance_after REAL NOT NULL DEFAULT 0,
+    date TEXT DEFAULT (datetime('now')),
+    reference TEXT DEFAULT '', -- Bill number or payment ref
+    notes TEXT DEFAULT '',
+    created_at TEXT DEFAULT (datetime('now')),
+    FOREIGN KEY (dealer_id) REFERENCES dealers(id) ON DELETE CASCADE
+  );
+
   -- Store settings (key-value)
   CREATE TABLE IF NOT EXISTS settings (
     key TEXT PRIMARY KEY,

@@ -65,7 +65,7 @@ export default function ReportsPage() {
   const fetchReports = async () => {
     setLoading(true);
     try {
-      const params = `from=${from}&to=${to}`;
+      const params = `from=${from}&to=${to}&_t=${Date.now()}`;
       const [summRes, dailyRes, prodRes, custRes, invListRes] = await Promise.all([
         fetch(`/api/reports?${params}&type=summary`),
         fetch(`/api/reports?${params}&type=daily`),
@@ -104,7 +104,7 @@ export default function ReportsPage() {
       const monthStart = `${caYear}-${caMonth}-01`;
       const lastDay = new Date(parseInt(caYear), parseInt(caMonth), 0).getDate();
       const monthEnd = `${caYear}-${caMonth}-${String(lastDay).padStart(2, '0')}`;
-      const params = `from=${monthStart}&to=${monthEnd}`;
+      const params = `from=${monthStart}&to=${monthEnd}&_t=${Date.now()}`;
 
       const [summRes, custRes, invListRes] = await Promise.all([
         fetch(`/api/reports?${params}&type=summary`),
@@ -301,7 +301,7 @@ export default function ReportsPage() {
       const totalProfit = (summary?.totalSales ?? 0) - (summary?.totalGst ?? 0); // Simplified mock profit
 
       // 1. Fetch Itemized Detailed List FIRST (Make it the primary view!)
-      const detailedReq = await fetch(`/api/reports?type=invoicelist_detailed&from=${from}&to=${to}`);
+      const detailedReq = await fetch(`/api/reports?type=invoicelist_detailed&from=${from}&to=${to}&_t=${Date.now()}`);
       if (detailedReq.ok) {
         const { invoices: detailedInvs, items: detailedItems } = await detailedReq.json();
         const itemRows = [];
@@ -640,7 +640,7 @@ export default function ReportsPage() {
             <div><Label>{t('From')}</Label><Input type="date" value={from} onChange={(e) => setFrom(e.target.value)} /></div>
             <div><Label>{t('To')}</Label><Input type="date" value={to} onChange={(e) => setTo(e.target.value)} /></div>
             <Button onClick={fetchReports} disabled={loading}>
-              {loading ? t('Loading...') || 'Loading...' : t('Generate Report')}
+              {loading ? t('Loading...') || 'Loading...' : t('Apply Date Filter')}
             </Button>
           </div>
         </CardContent>
@@ -702,7 +702,7 @@ export default function ReportsPage() {
                         <XAxis dataKey="date" tickFormatter={(v) => format(new Date(v), 'dd MMM')} />
                         <YAxis tickFormatter={(v) => `₹${v}`} />
                         <Tooltip formatter={(v: number) => [formatCurrency(v), t('Sales')]} labelFormatter={(l) => format(new Date(l), 'dd MMM yyyy')} />
-                        <Bar dataKey="total_sales" fill="var(--primary)" radius={[4, 4, 0, 0]} />
+                        <Bar dataKey="total_sales" fill="#16a34a" radius={[4, 4, 0, 0]} />
                       </BarChart>
                     </ResponsiveContainer>
                   </div>

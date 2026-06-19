@@ -11,10 +11,10 @@ export async function POST(req: Request) {
 
         const insertProduct = db.prepare(`
       INSERT INTO products (
-        name, sku, category, hsn_code, purchase_price, selling_price,
+        name, sku, brand, article_no, size, color, category, hsn_code, purchase_price, selling_price,
         quantity, unit, low_stock_alert, gst_rate, description
       ) VALUES (
-        @name, @sku, @category, @hsn_code, @purchase_price, @selling_price,
+        @name, @sku, @brand, @article_no, @size, @color, @category, @hsn_code, @purchase_price, @selling_price,
         @quantity, @unit, @low_stock_alert, @gst_rate, @description
       )
     `);
@@ -32,6 +32,10 @@ export async function POST(req: Request) {
                     insertProduct.run({
                         name: String(row.name).trim(),
                         sku: row.sku ? String(row.sku) : null,
+                        brand: row.brand ? String(row.brand).trim() : '',
+                        article_no: row.article_no ? String(row.article_no).trim() : '',
+                        size: row.size ? String(row.size).trim() : '',
+                        color: row.color ? String(row.color).trim() : '',
                         category: row.category ? String(row.category) : '',
                         hsn_code: row.hsn_code ? String(row.hsn_code) : '',
                         purchase_price: Number(row.purchase_price) || 0,

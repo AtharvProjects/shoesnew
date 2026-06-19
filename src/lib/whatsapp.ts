@@ -230,13 +230,42 @@ export const sendWhatsAppMessage = async (phone: string, message: string, mediaB
     if (mediaBase64 && fileName) {
       const { MessageMedia } = require('whatsapp-web.js');
       const media = new MessageMedia('application/pdf', mediaBase64, fileName);
-      await globalWhatsapp.client.sendMessage(chatId, media, { caption: message });
+      await globalWhatsapp.client.sendMessage(chatId, media, { 
+        caption: message,
+        linkPreview: false 
+      });
     } else {
-      await globalWhatsapp.client.sendMessage(chatId, message);
+      await globalWhatsapp.client.sendMessage(chatId, message, {
+        linkPreview: false
+      });
     }
     return true;
-  } catch (error) {
+  } catch (error: any) {
     console.error('Error sending WhatsApp message:', error);
+    
+    // Auto-recover if the underlying Puppeteer browser crashed
+    if (error && error.message && (
+      error.message.includes('detached Frame') || 
+      error.message.includes('Target closed') ||
+      error.message.includes('Execution context was destroyed') ||
+      error.message.includes('Protocol error') ||
+      error.message.includes('Session closed')
+    )) {
+      console.log('Detected a crashed WhatsApp browser frame. Triggering auto-recovery...');
+      try {
+        await globalWhatsapp.client?.destroy();
+      } catch (destroyErr) {
+        console.error('Error destroying crashed client:', destroyErr);
+      }
+      globalWhatsapp.client = null;
+      globalWhatsapp.status = 'disconnected';
+      
+      // Kick off initialization in the background (auth session is NOT cleared, so it will auto-login)
+      initWhatsApp().catch(e => console.error('Auto-recovery init failed:', e));
+      
+      throw new Error('WhatsApp connection was lost and is restarting in the background. Please try sending again in 10 seconds.');
+    }
+    
     throw error;
   }
 };

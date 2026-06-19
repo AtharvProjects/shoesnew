@@ -239,93 +239,173 @@ export default function ProductsPage() {
     e.target.value = '';
   };
 
+  /** Expand size range notation like "5x9" → "5,6,7,8,9" or "10x13" → "10,11,12,13" */
+  const expandSizeRange = (sizeStr: string): string => {
+    const match = sizeStr.match(/^(\d+)\s*[xX×]\s*(\d+)$/);
+    if (!match) return sizeStr;
+    const start = parseInt(match[1], 10);
+    const end = parseInt(match[2], 10);
+    if (isNaN(start) || isNaN(end) || start >= end || end - start > 20) return sizeStr;
+    const sizes: number[] = [];
+    for (let i = start; i <= end; i++) sizes.push(i);
+    return sizes.join(',');
+  };
+
   const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
 
-    const toastId = toast.loading('Extracting invoice with Local OCR... (this may take a few seconds)');
+    const toastId = toast.loading('Extracting dealer invoice with OCR... (this may take 10-15 seconds)');
     try {
-      // Dynamically import Tesseract to avoid Next.js SSR issues
       const Tesseract = (await import('tesseract.js')).default;
       const { data: { text } } = await Tesseract.recognize(file, 'eng');
       
       const lines = text.split('\n').map((l: string) => l.trim()).filter((l: string) => l.length > 0);
       const products: any[] = [];
-      
+
+      // Known footwear brand prefixes from typical dealer invoices
+      const knownBrands = [
+        'STECON', 'Stecon', 'CATTA', 'Catta', 'CRAKE', 'Crake',
+        'MOST WALK', 'Most Walk', 'MOSTWALK', 'ROUBA', 'Rouba',
+        'CITY FOOT', 'City Foot', 'CITYFOOT', 'BORDER', 'Border',
+        'BDR', 'TONGASS', 'Tongass', 'TONGAS', 'SAINA', 'Saina',
+        'ERTIGA', 'SHRUTI', 'CAMPUS', 'Campus', 'SPARX', 'Sparx',
+        'ACTION', 'Action', 'RELAXO', 'Relaxo', 'BATA', 'Bata',
+        'LAKHANI', 'Lakhani', 'LIBERTY', 'Liberty', 'PARAGON', 'Paragon',
+        'RED CHIEF', 'WOODLAND', 'Woodland', 'NIKE', 'Nike',
+        'ADIDAS', 'Adidas', 'PUMA', 'Puma', 'REEBOK', 'Reebok',
+        'FILA', 'Fila', 'SKECHERS', 'Skechers',
+      ];
+
       for (const line of lines) {
         const lowerLine = line.toLowerCase();
-        // Skip header/footer lines
-        if (lowerLine.includes('total') || lowerLine.includes('tax') || lowerLine.includes('invoice') || lowerLine.includes('date') || lowerLine.includes('hsn') || lowerLine.includes('gst') || lowerLine.includes('m.r.p')) {
+        // Skip header/footer/summary lines
+        if (lowerLine.includes('total') || lowerLine.includes('subject to') ||
+            lowerLine.includes('computer generated') || lowerLine.includes('continued') ||
+            lowerLine.includes('description of goods') || lowerLine.includes('consignee') ||
+            lowerLine.includes('buyer') || lowerLine.includes('state name') ||
+            lowerLine.includes('gstin') || lowerLine.includes('invoice') && lowerLine.includes('date') ||
+            lowerLine.includes('terms of delivery') || lowerLine.includes('dispatch') ||
+            lowerLine.includes('reference') || lowerLine.includes('delivery note') ||
+            lowerLine.includes('bhivghat') || lowerLine.includes('saksham') ||
+            lowerLine.includes('adarsh shoes') || lowerLine.includes('maharashtra') ||
+            lowerLine.includes('ph.no') || lowerLine.includes('pin-') ||
+            lowerLine.startsWith('s ') || lowerLine.startsWith('$') ||
+            lowerLine.match(/^\d+\s*$/) ||
+            lowerLine.includes('hsn') && lowerLine.includes('quantity')) {
           continue;
         }
 
-        // Try to find prices if possible
-        const decimalMatch = line.match(/\b\d+[\.,]\d{2}\b/g);
-        let maxPrice = 0;
-        let minPrice = 0;
+        // Try to detect a product line:
+        // Pattern: [optional Sr#] BrandName ArticleNo SizeRange [Rate] HSN Qty pair Rate pair Disc% Amount
+        // Or: BrandName ArticleNo SizeRange [Rate] HSN Qty pair ...
+
+        // Step 1: Find size range pattern (NxN or NxNN)
+        const sizeMatch = line.match(/\b(\d{1,2})\s*[xX×]\s*(\d{1,2})\b/);
+        if (!sizeMatch) continue; // Not a product line if no size range
+
+        const sizeRange = `${sizeMatch[1]}x${sizeMatch[2]}`;
+        const expandedSize = expandSizeRange(sizeRange);
+
+        // Step 2: Extract rate from brackets [374] or [279] etc.
+        const bracketRateMatch = line.match(/\[(\d+)\]/);
+        const rate = bracketRateMatch ? parseFloat(bracketRateMatch[1]) : 0;
+
+        // Step 3: Extract HSN code (6-8 digit number starting with 64)
+        const hsnMatch = line.match(/\b(64\d{4,6})\b/);
+        const hsn = hsnMatch ? hsnMatch[1] : '';
+
+        // Step 4: Extract quantity (number before "pair")
+        const qtyMatch = line.match(/(\d+)\s*pair/i);
+        const quantity = qtyMatch ? parseInt(qtyMatch[1], 10) : 1;
+
+        // Step 5: Extract discount percentage
+        const discMatch = line.match(/(\d+)\s*%/);
+        const discountPct = discMatch ? parseInt(discMatch[1], 10) : 0;
+
+        // Step 6: Extract brand and article number from the beginning of line
+        // Remove line number prefix if present (e.g., "1 STECON..." or "12 MOST WALK...")
+        let cleanLine = line.replace(/^\d+\s*/, '');
+
+        // Find which brand matches
+        let brand = '';
+        let articleNo = '';
         
-        if (decimalMatch && decimalMatch.length >= 1) {
-          const prices = decimalMatch.map(s => Number(s.replace(',', '.'))).filter(n => !isNaN(n) && n > 0);
-          if (prices.length > 0) {
-            maxPrice = Math.max(...prices);
-            minPrice = Math.min(...prices);
+        for (const b of knownBrands) {
+          if (cleanLine.toUpperCase().startsWith(b.toUpperCase())) {
+            brand = b.toUpperCase();
+            // Extract article number: the number after the brand name, before the size range
+            const afterBrand = cleanLine.substring(b.length).trim();
+            const artMatch = afterBrand.match(/^[A-Z]*\s*(\d+[A-Z]?)/i);
+            if (artMatch) {
+              articleNo = artMatch[1];
+            }
+            break;
           }
         }
 
-        // Try to find quantity
-        const intMatch = line.match(/\b\d{1,4}\b/g);
-        let quantity = 1;
-        if (intMatch) {
-          const ints = intMatch.map(Number).filter(n => n > 0 && n <= 500);
-          if (ints.length > 0) {
-             quantity = ints[0];
+        // If no known brand matched, try to parse generically
+        if (!brand) {
+          // Try: everything before the first number sequence is the brand
+          const genericMatch = cleanLine.match(/^([A-Za-z\s]+?)\s+(\d+[A-Z]?)\s/);
+          if (genericMatch) {
+            brand = genericMatch[1].trim().toUpperCase();
+            articleNo = genericMatch[2];
+          } else {
+            continue; // Can't parse this line
           }
         }
 
-        // Clean up name by removing numbers that look like prices or IDs
-        let name = line.replace(/\b\d+[\.,]\d{2}\b/g, '')
-                       .replace(/\b\d{5,}\b/g, '')
-                       .replace(/[^\w\s-]/g, ' ')
-                       .replace(/\s+/g, ' ')
-                       .trim();
+        // Step 7: Calculate prices
+        // Rate in brackets = MRP/selling price per unit
+        // Purchase price = Rate * (1 - discount/100) 
+        const sellingPrice = rate;
+        const purchasePrice = discountPct > 0 ? Math.round(rate * (1 - discountPct / 100) * 100) / 100 : rate;
 
-        // If Tesseract completely failed to separate things, just use the raw line as the name
-        if (name.length < 3) {
-           name = line.replace(/[^\w\s-\.,]/g, ' ').replace(/\s+/g, ' ').trim();
-        }
+        // Step 8: Determine GST rate from HSN
+        let gstRate = 0;
+        if (hsn.startsWith('6402')) gstRate = 18;
+        else if (hsn.startsWith('6403')) gstRate = 18;
+        else if (hsn.startsWith('6404')) gstRate = 18;
+        else if (hsn.startsWith('6405')) gstRate = 18;
+        else if (hsn.startsWith('6401')) gstRate = 18;
 
-        if (name.length >= 5) {
-           products.push({
-             ...emptyProduct,
-             name: name.substring(0, 100),
-             purchase_price: minPrice,
-             selling_price: maxPrice,
-             quantity: quantity,
-             category: 'Uncategorized',
-             unit: 'pcs'
-           });
+        const productName = `${brand} ${articleNo}`.trim();
+
+        if (productName.length >= 3 && sellingPrice > 0) {
+          products.push({
+            ...emptyProduct,
+            name: productName,
+            brand: brand,
+            article_no: articleNo,
+            size: expandedSize,
+            hsn_code: hsn.substring(0, 4), // Store 4-digit HSN
+            purchase_price: purchasePrice,
+            selling_price: sellingPrice,
+            quantity: quantity,
+            unit: 'pair',
+            gst_rate: gstRate,
+            category: '',
+            description: `Dealer invoice: Size ${sizeRange}, Disc ${discountPct}%`,
+          });
         }
       }
 
-      // If even that failed, show a better fallback
+      // Fallback if nothing was parsed
       if (products.length === 0) {
-         products.push({
-            ...emptyProduct,
-            name: 'No readable text found',
-            purchase_price: 0,
-            selling_price: 0,
-            quantity: 1,
-         });
+        toast.error('Could not detect any products from the invoice. Please ensure the image is clear and contains product lines with size ranges (e.g. 5x9).', { id: toastId });
+        e.target.value = '';
+        return;
       }
 
       const productsWithIds = products.map((p: any, i: number) => ({
         ...p,
-        id: -1 * (i + 1), // temp id for tracking
+        id: -1 * (i + 1),
       }));
 
       setExtractedProducts(productsWithIds);
       setExtractOpen(true);
-      toast.success('Extraction successful. Please review.', { id: toastId });
+      toast.success(`Extracted ${products.length} products! Please review before saving.`, { id: toastId });
     } catch (error: any) {
       console.error(error);
       toast.error(error.message || 'Failed to extract from image', { id: toastId });
@@ -591,7 +671,19 @@ export default function ProductsPage() {
               <div className="grid grid-cols-2 gap-4">
                 <div>
                   <Label htmlFor="product-size">{t('Size')}</Label>
-                  <Input id="product-size" value={form.size} onChange={(e) => setForm({ ...form, size: e.target.value })} placeholder="e.g. 9 UK" />
+                  <Input 
+                    id="product-size" 
+                    value={form.size} 
+                    onChange={(e) => setForm({ ...form, size: e.target.value })} 
+                    onBlur={(e) => {
+                      const expanded = expandSizeRange(e.target.value.trim());
+                      if (expanded !== e.target.value.trim()) {
+                        setForm({ ...form, size: expanded });
+                      }
+                    }}
+                    placeholder="e.g. 5x9 or 5,6,7,8,9" 
+                  />
+                  <p className="text-[11px] text-muted-foreground mt-1">Type 5x9 to auto-expand to 5,6,7,8,9</p>
                 </div>
                 <div>
                   <Label htmlFor="product-color">{t('Color')}</Label>
@@ -739,7 +831,7 @@ export default function ProductsPage() {
 
       {/* Extract Review Dialog */}
       <Dialog open={extractOpen} onOpenChange={setExtractOpen}>
-        <DialogContent className="sm:max-w-[90vw] md:max-w-5xl max-h-[90vh] overflow-y-auto">
+        <DialogContent className="sm:max-w-[95vw] md:max-w-6xl max-h-[90vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle>{t('Review Extracted Products')}</DialogTitle>
           </DialogHeader>
@@ -749,13 +841,15 @@ export default function ProductsPage() {
               <Table>
                 <TableHeader>
                   <TableRow>
-                    <TableHead className="min-w-[250px]">{t('Name')}</TableHead>
-                    <TableHead className="min-w-[120px]">{t('SKU')}</TableHead>
-                    <TableHead className="min-w-[140px]">{t('Category')}</TableHead>
-                    <TableHead className="min-w-[100px]">{t('Purchase Price (₹)')}</TableHead>
-                    <TableHead className="min-w-[100px]">{t('Selling Price * (₹)')}</TableHead>
-                    <TableHead className="min-w-[80px]">{t('Qty')}</TableHead>
-                    <TableHead className="min-w-[80px]">{t('GST Rate (%)')}</TableHead>
+                    <TableHead className="min-w-[180px]">{t('Name')}</TableHead>
+                    <TableHead className="min-w-[100px]">{t('Brand')}</TableHead>
+                    <TableHead className="min-w-[80px]">{t('Article No')}</TableHead>
+                    <TableHead className="min-w-[100px]">{t('Size')}</TableHead>
+                    <TableHead className="min-w-[70px]">{t('HSN')}</TableHead>
+                    <TableHead className="min-w-[90px]">{t('Purchase ₹')}</TableHead>
+                    <TableHead className="min-w-[90px]">{t('Selling ₹')}</TableHead>
+                    <TableHead className="min-w-[60px]">{t('Qty')}</TableHead>
+                    <TableHead className="min-w-[70px]">{t('GST %')}</TableHead>
                     <TableHead></TableHead>
                   </TableRow>
                 </TableHeader>
@@ -763,8 +857,10 @@ export default function ProductsPage() {
                   {extractedProducts.map(p => (
                     <TableRow key={p.id}>
                       <TableCell><Input value={p.name} onChange={e => updateExtractedProduct(p.id, 'name', e.target.value)} className="w-full" /></TableCell>
-                      <TableCell><Input value={p.sku || ''} onChange={e => updateExtractedProduct(p.id, 'sku', e.target.value)} className="w-full" /></TableCell>
-                      <TableCell><Input value={p.category || ''} onChange={e => updateExtractedProduct(p.id, 'category', e.target.value)} className="w-full" /></TableCell>
+                      <TableCell><Input value={p.brand || ''} onChange={e => updateExtractedProduct(p.id, 'brand', e.target.value)} className="w-full" /></TableCell>
+                      <TableCell><Input value={p.article_no || ''} onChange={e => updateExtractedProduct(p.id, 'article_no', e.target.value)} className="w-full" /></TableCell>
+                      <TableCell><Input value={p.size || ''} onChange={e => updateExtractedProduct(p.id, 'size', e.target.value)} className="w-full" /></TableCell>
+                      <TableCell><Input value={p.hsn_code || ''} onChange={e => updateExtractedProduct(p.id, 'hsn_code', e.target.value)} className="w-full" /></TableCell>
                       <TableCell><Input type="number" value={p.purchase_price} onChange={e => updateExtractedProduct(p.id, 'purchase_price', parseFloat(e.target.value) || 0)} className="w-full" /></TableCell>
                       <TableCell><Input type="number" value={p.selling_price} onChange={e => updateExtractedProduct(p.id, 'selling_price', parseFloat(e.target.value) || 0)} className="w-full" /></TableCell>
                       <TableCell><Input type="number" value={p.quantity} onChange={e => updateExtractedProduct(p.id, 'quantity', parseFloat(e.target.value) || 0)} className="w-full" /></TableCell>

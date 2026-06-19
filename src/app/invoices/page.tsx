@@ -6,6 +6,7 @@
 'use client';
 
 import { amountInWords } from '@/lib/gst-utils';
+import InvoiceTemplate from '@/app/components/InvoiceTemplate';
 
 import { useEffect, useState, useCallback, useRef } from 'react';
 import { Button } from '@/components/ui/button';
@@ -133,19 +134,17 @@ export default function InvoicesPage() {
    * Steps:
    *  1. Unlock every scrollable/clipping ancestor (dialog, modals)
    *  2. Force the billRef div to exact A4 size
-   *  3. Force the inner invoice table to fill (A4 height − padding)
-   *  4. Wait 2 rAFs for a full browser reflow
-   *  5. Capture at 2× pixel ratio → crisp 1588×2246 px image
-   *  6. Always restore original styles (even on error)
+   * 1. Unlock every scrollable/clipping ancestor (dialog, modals)
+   * 2. Force the billRef div to natural height
+   * 3. Wait 2 rAFs for a full browser reflow
+   * 4. Capture at 2× pixel ratio
+   * 5. Always restore original styles (even on error)
    */
-  const A4_W_PX = 794;
-  const A4_H_PX = 1123;
+  const captureDynamicHeight = async (fmt: 'png'|'jpeg' = 'png', quality = 1) => {
+    const node = billRef.current;
+    if (!node) throw new Error('No bill ref');
 
-  const forceA4AndCapture = async (
-    fmt: 'png' | 'jpeg',
-    quality = 0.95
-  ): Promise<string> => {
-    const node = billRef.current!;
+    const A4_W_PX = 794; // 210mm at 96dpi
 
     // 1. Unlock every scrolling/clipping ancestor
     const ancestors: Array<{ el: HTMLElement; mh: string; ov: string; oy: string }> = [];
@@ -162,27 +161,35 @@ export default function InvoicesPage() {
       anc = anc.parentElement;
     }
 
-    // 2. Force the bill node to exact A4 pixels
+    // 2. Force the bill node to exact A4 width, but natural height
     const sNode = {
       width: node.style.width, minWidth: node.style.minWidth,
       height: node.style.height, minHeight: node.style.minHeight,
       maxHeight: node.style.maxHeight, overflow: node.style.overflow,
+      margin: node.style.margin, padding: node.style.padding
     };
     node.style.width    = `${A4_W_PX}px`;
     node.style.minWidth = `${A4_W_PX}px`;
-    node.style.height   = `${A4_H_PX}px`;
-    node.style.minHeight = `${A4_H_PX}px`;
-    node.style.maxHeight = `${A4_H_PX}px`;
-    node.style.overflow  = 'hidden';
+    node.style.height   = 'max-content';
+    node.style.maxHeight = 'none';
+    node.style.overflow  = 'visible';
+    node.style.margin    = '0'; // Prevent centering from shifting capture bounds
 
-    // 3. Force the inner invoice table to fill the A4 height
-    //    billRef has p-6 padding (24px * 2 = 48px total vertical)
+    // 3. Let the inner table define its own height
     const table = node.querySelector('.invoice-items-table') as HTMLElement | null;
     const sTable = table ? table.style.height : '';
-    if (table) table.style.height = `${A4_H_PX - 48}px`;
+    if (table) table.style.height = 'max-content';
 
     // 4. Two animation frames → full reflow
     await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+
+    // Get the actual height after reflow
+    const actualHeight = node.getBoundingClientRect().height;
+
+    // 5. Scroll to top to prevent html-to-image from clipping the top header
+    const originalScrollY = window.scrollY;
+    const originalScrollX = window.scrollX;
+    window.scrollTo(0, 0);
 
     const restore = () => {
       Object.assign(node.style, sNode);
@@ -192,6 +199,7 @@ export default function InvoicesPage() {
         el.style.overflow   = ov;
         el.style.overflowY  = oy;
       }
+      window.scrollTo(originalScrollX, originalScrollY);
     };
 
     try {
@@ -201,46 +209,54 @@ export default function InvoicesPage() {
         backgroundColor: '#ffffff',
         pixelRatio: 2,
         width:  A4_W_PX,
-        height: A4_H_PX,
+        height: actualHeight,
         quality,
       });
       restore();
-      return url;
+      return { url, actualHeight, width: A4_W_PX };
     } catch (err) {
       restore();
       throw err;
     }
   };
 
-  /* ── Download as A4 PDF ── */
+  /* ── Download as PDF ── */
   const exportPDF = async () => {
     if (!billRef.current) return;
-    const tid = toast.loading(t('Generating A4 PDF…') || 'Generating A4 PDF…');
+    const tid = toast.loading(t('Generating PDF…') || 'Generating PDF…');
     try {
-      const img = await forceA4AndCapture('png');
+      const { url: img, actualHeight, width } = await captureDynamicHeight('png');
       const mod = await import('jspdf');
       const JsPDF = (mod.jsPDF ?? mod.default ?? mod) as any;
-      const pdf  = new JsPDF('p', 'mm', [210, 297]);
-      pdf.addImage(img, 'PNG', 0, 0, 210, 297);
+      
+      const pdfWidth = 210; // A4 width
+      const pdfHeight = Math.max((actualHeight * pdfWidth) / width, 100);
+      
+      const pdf = new JsPDF({
+        orientation: 'p',
+        unit: 'mm',
+        format: [pdfWidth, pdfHeight]
+      });
+      pdf.addImage(img, 'PNG', 0, 0, pdfWidth, pdfHeight);
       pdf.save(`${selectedInvoice?.invoice_number || 'invoice'}.pdf`);
-      toast.success(t('PDF saved — A4 size ✓') || 'PDF saved — A4 size ✓', { id: tid });
+      toast.success(t('PDF saved ✓') || 'PDF saved ✓', { id: tid });
     } catch (e) {
       console.error(e);
       toast.error(t('PDF export failed.') || 'PDF export failed.', { id: tid });
     }
   };
 
-  /* ── Download as A4 JPG ── */
+  /* ── Download as JPG ── */
   const exportJPG = async () => {
     if (!billRef.current) return;
     const tid = toast.loading(t('Generating JPG…') || 'Generating JPG…');
     try {
-      const url  = await forceA4AndCapture('jpeg', 0.95);
+      const { url } = await captureDynamicHeight('jpeg', 0.95);
       const link = document.createElement('a');
       link.download = `${selectedInvoice?.invoice_number || 'invoice'}.jpg`;
       link.href = url;
       link.click();
-      toast.success(t('JPG saved — A4 size ✓') || 'JPG saved — A4 size ✓', { id: tid });
+      toast.success(t('JPG saved ✓') || 'JPG saved ✓', { id: tid });
     } catch (e) {
       console.error(e);
       toast.error(t('JPG export failed.') || 'JPG export failed.', { id: tid });
@@ -282,18 +298,98 @@ export default function InvoicesPage() {
       
       let mediaBase64 = null;
       let fileName = null;
-      if (billRef.current) {
-        try {
-          const img = await forceA4AndCapture('jpeg', 0.95);
+      try {
+        const iframe = document.createElement('iframe');
+        iframe.style.position = 'absolute';
+        iframe.style.width = '1000px'; 
+        iframe.style.height = '1414px';
+        iframe.style.top = '-9999px';
+        iframe.style.left = '-9999px';
+        
+        iframe.src = `/invoices/print/${inv.id}?noprint=true`;
+        document.body.appendChild(iframe);
+        
+        let printArea: HTMLElement | null = null;
+        let iframeDoc: Document | null = null;
+        
+        // Poll for up to 5 seconds to find print-area
+        for (let i = 0; i < 50; i++) {
+          await new Promise(r => setTimeout(r, 100));
+          try {
+            iframeDoc = iframe.contentDocument || iframe.contentWindow?.document || null;
+            printArea = iframeDoc?.getElementById('print-area') || null;
+            if (printArea) {
+              // Found it! Wait an additional 1 second for images/fonts to settle
+              await new Promise(r => setTimeout(r, 1000));
+              break;
+            }
+          } catch (e) {
+            // Ignore potential cross-origin access errors during initial load
+          }
+        }
+        
+          if (printArea && iframeDoc) {
+          // Clone the print area into the main document to avoid cross-iframe issues with html2canvas
+          const clone = printArea.cloneNode(true) as HTMLElement;
+          clone.style.position = 'absolute';
+          clone.style.top = '0px';
+          clone.style.left = '0px';
+          clone.style.margin = '0px';
+          clone.style.padding = '0px';
+          clone.style.width = '794px'; // 210mm at 96dpi
+          clone.style.zIndex = '-9999';
+          clone.style.pointerEvents = 'none';
+          
+          // Copy all stylesheets from iframe into a <style> block
+          const styles = Array.from(iframeDoc.querySelectorAll('style, link[rel="stylesheet"]'));
+          const styleContainer = document.createElement('div');
+          styleContainer.id = '__pdf-styles__';
+          for (const s of styles) {
+            styleContainer.appendChild(s.cloneNode(true));
+          }
+          document.head.appendChild(styleContainer);
+          document.body.appendChild(clone);
+          
+          // Give browser a moment to apply styles
+          await new Promise(r => setTimeout(r, 200));
+
+          const html2canvas = (await import('html2canvas-pro')).default;
+          const canvas = await html2canvas(clone, {
+            scale: 2,
+            useCORS: true,
+            logging: false,
+          });
+          
+          // Clean up cloned elements
+          document.body.removeChild(clone);
+          document.head.removeChild(styleContainer);
+          
+          const imgData = canvas.toDataURL('image/jpeg', 0.95);
           const mod = await import('jspdf');
           const JsPDF = (mod.jsPDF ?? mod.default ?? mod) as any;
-          const pdf  = new JsPDF('p', 'mm', [210, 297]);
-          pdf.addImage(img, 'JPEG', 0, 0, 210, 297);
+          
+          const pdfWidth = 210; // Standard A4 width in mm
+          // Calculate exact height needed, ensuring a minimum height of 100mm
+          const pdfHeight = Math.max((canvas.height * pdfWidth) / canvas.width, 100);
+          
+          const pdf = new JsPDF({
+            orientation: 'p',
+            unit: 'mm',
+            format: [pdfWidth, pdfHeight]
+          });
+          
+          pdf.addImage(imgData, 'JPEG', 0, 0, pdfWidth, pdfHeight);
           mediaBase64 = pdf.output('datauristring').split(',')[1];
           fileName = `${inv.invoice_number || 'invoice'}.pdf`;
-        } catch (e) {
-          console.error("Failed to generate PDF for attachment:", e);
+        } else {
+          console.error("printArea not found inside iframe after 5 seconds.");
+          toast.error("Failed to load printable invoice area. Proceeding with message only.");
         }
+        document.body.removeChild(iframe);
+      } catch (e: any) {
+        console.error("Failed to generate PDF for attachment:", e);
+        const errStr = e?.message || (typeof e === 'string' ? e : JSON.stringify(e));
+        toast.error("Error generating PDF: " + errStr);
       }
 
       const res = await fetch('/api/whatsapp/send', {
@@ -514,337 +610,12 @@ export default function InvoicesPage() {
               </div>
             ) : (
               /* PROFESSIONAL A4 LAYOUT */
-              <div style={{ fontFamily: 'Arial, Helvetica, sans-serif', fontSize: '11px' }} className="text-black bg-white">
-                <table className="invoice-items-table border-collapse w-full" style={{ borderCollapse: 'collapse' }}>
-                  <tbody>
-                    {/* Company Header */}
-                    <tr style={{ height: '1px' }}>
-                      <td colSpan={9} className="border border-black p-0">
-                        <div className="flex-1 text-center py-3 px-4">
-                          <h1 className="font-bold text-xl uppercase tracking-wide">{selectedInvoice?.store_name || settings.store_name || 'Store'}</h1>
-                          {settings.store_address && <p className="text-[11px] mt-0.5">{settings.store_address}</p>}
-                          {settings.store_fssai && <p className="text-[11px]">Fssai No.{settings.store_fssai}</p>}
-                          {settings.store_phone && <p className="text-[11px]">Contact : {settings.store_phone}</p>}
-                          {settings.store_gstin && <p className="text-[11px] font-bold">GSTIN : {settings.store_gstin}</p>}
-                        </div>
-                      </td>
-                    </tr>
-
-                    {/* Invoice Type */}
-                    <tr style={{ height: '1px' }}>
-                      <td colSpan={9} className="border border-black p-0">
-                        <div className="flex justify-between items-center px-2 py-1">
-                          <span></span>
-                          <span className="font-bold text-sm">{selectedInvoice?.gst_enabled === 1 ? t('Tax Invoice').toUpperCase() : t('Bill of Supply').toUpperCase()}</span>
-                          <span className="text-[10px] font-bold">(ORIGINAL FOR RECIPIENT)</span>
-                        </div>
-                      </td>
-                    </tr>
-
-                    {/* Buyer + Invoice Details */}
-                    <tr style={{ height: '1px' }}>
-                      <td colSpan={5} className="border border-black p-0 align-top" style={{ width: '55%' }}>
-                        <div className="p-1.5 text-[10px] leading-tight">
-                          <p className="font-bold text-[9px]">{t('Buyer')} :</p>
-                          <p className="font-bold ml-1 text-[11px]">{selectedInvoice?.customer_name}</p>
-                          {selectedInvoice?.customer_address && <p className="ml-1 text-[10px]">{selectedInvoice.customer_address}</p>}
-                          {selectedInvoice?.customer_phone && <p className="ml-1 font-bold text-[10px]">Mob : {selectedInvoice.customer_phone}</p>}
-                          {selectedInvoice?.customer_gstin && <p className="ml-1 font-bold text-[10px]">GST No : {selectedInvoice.customer_gstin}</p>}
-                        </div>
-                      </td>
-                      <td colSpan={4} className="border border-black p-0 align-top" style={{ width: '45%' }}>
-                        <table className="w-full text-[10px] border-collapse">
-                          <tbody>
-                            <tr className="border-b border-black">
-                              <td className="font-bold p-1 px-2 border-r border-black whitespace-nowrap">{t('Invoice No.')}</td>
-                              <td className="font-bold p-1 px-2">{selectedInvoice?.invoice_number}</td>
-                            </tr>
-                            <tr className="border-b border-black">
-                              <td className="font-bold p-1 px-2 border-r border-black whitespace-nowrap">{t('Date')}</td>
-                              <td className="font-bold p-1 px-2">{selectedInvoice && format(new Date(selectedInvoice.created_at.replace(' ', 'T') + 'Z'), 'dd-MMM-yy')}</td>
-                            </tr>
-                            <tr className="border-b border-black">
-                              <td className="font-bold p-1 px-2 border-r border-black whitespace-nowrap">{t('Vehicle No.')}</td>
-                              <td className="p-1 px-2"></td>
-                            </tr>
-                            <tr>
-                              <td className="font-bold p-1 px-2 border-r border-black whitespace-nowrap">{t('Time')}</td>
-                              <td className="p-1 px-2 font-bold">{selectedInvoice && format(new Date(selectedInvoice.created_at.replace(' ', 'T') + 'Z'), 'HH:mm:ss')}</td>
-                            </tr>
-                          </tbody>
-                        </table>
-                      </td>
-                    </tr>
-
-                    {/* Items Header */}
-                    <tr className="font-bold border border-black" style={{ fontSize: '10px', height: '1px' }}>
-                      <td className="border border-black p-1 text-center" style={{ width: '25px' }}>{t('SI No')}</td>
-                      <td className="border border-black p-1" style={{ width: '35%' }}>{t('Particulars')}</td>
-                      <td className="border border-black p-1 text-center" style={{ width: '55px' }}>HSN/SAC</td>
-                      <td className="border border-black p-1 text-center" style={{ width: '30px' }}>GST %</td>
-                      <td className="border border-black p-1 text-center" style={{ width: '40px' }}>{t('BAG')}</td>
-                      <td className="border border-black p-1 text-center" style={{ width: '65px' }}>{t('KG')}</td>
-                      <td className="border border-black p-1 text-center" style={{ width: '45px' }}>{t('Tax Incl')}</td>
-                      <td className="border border-black p-1 text-center" style={{ width: '50px' }}>{t('Rate')}</td>
-                      <td className="border border-black p-1 text-right" style={{ width: '80px' }}>{t('Net Value')}</td>
-                    </tr>
-
-                    {/* Items Rows */}
-                    {selectedItems.map((item, idx) => {
-                      const bagUnits = new Set(['bag', 'pcs', 'box', 'pack', 'dozen', 'feet', 'meter', 'sqft', 'ltr', 'ml']);
-                      const unit = (item.unit || '').toLowerCase();
-                      const bagStr = bagUnits.has(unit) ? String(item.quantity) : '-';
-                      let kgStr = '-';
-                      if (bagUnits.has(unit) && Number(item.weight_kg || 0) > 0) {
-                        kgStr = (item.quantity * Number(item.weight_kg)).toFixed(2);
-                      } else if (unit === 'kg') {
-                        kgStr = item.quantity.toFixed(3);
-                      } else if (unit === 'g') {
-                        kgStr = (item.quantity / 1000).toFixed(3);
-                      }
-                      return (
-                      <tr key={item.id} style={{ fontSize: '10px', height: '1px' }}>
-                        <td className="border-l border-r border-black p-1 text-center">{idx + 1}</td>
-                        <td className="border-r border-black p-1 font-bold">{item.product_name}</td>
-                        <td className="border-r border-black p-1 text-center font-mono">{item.hsn_code || ''}</td>
-                        <td className="border-r border-black p-1 text-center">{item.gst_rate || 0}%</td>
-                        <td className="border-r border-black p-1 text-center">{bagStr}</td>
-                        <td className="border-r border-black p-1 text-right">{kgStr}</td>
-                        <td className="border-r border-black p-1 text-center"></td>
-                        <td className="border-r border-black p-1 text-right">{item.price.toFixed(2)}</td>
-                        <td className="border-l border-r border-black p-1 text-right">{(item.taxable_amount || item.total).toFixed(2)}</td>
-                      </tr>
-                      );
-                    })}
-
-                    {/* Spacer row — fills remaining A4 space */}
-                    <tr className="invoice-spacer-row" style={{ fontSize: '10px' }}>
-                      <td className="border-l border-r border-black p-1"></td>
-                      <td className="border-r border-black p-1"></td>
-                      <td className="border-r border-black p-1"></td>
-                      <td className="border-r border-black p-1"></td>
-                      <td className="border-r border-black p-1"></td>
-                      <td className="border-r border-black p-1"></td>
-                      <td className="border-r border-black p-1"></td>
-                      <td className="border-r border-black p-1"></td>
-                      <td className="border-l border-r border-black p-1"></td>
-                    </tr>
-
-                    {/* Discount A/c */}
-                    <tr style={{ fontSize: '10px', height: '1px' }}>
-                      <td className="border-l border-r border-black p-1"></td>
-                      <td className="border-r border-black p-1 text-center font-bold">Discount A/c</td>
-                      <td className="border-r border-black p-1"></td><td className="border-r border-black p-1"></td>
-                      <td className="border-r border-black p-1"></td><td className="border-r border-black p-1"></td>
-                      <td className="border-r border-black p-1"></td><td className="border-r border-black p-1"></td>
-                      <td className="border-l border-r border-black p-1 text-right">{(selectedInvoice?.discount_amount || 0) > 0 ? (selectedInvoice?.discount_amount || 0).toFixed(2) : ''}</td>
-                    </tr>
-                    {/* Hamali */}
-                    <tr style={{ fontSize: '10px', height: '1px' }}>
-                      <td className="border-l border-r border-black p-1"></td>
-                      <td className="border-r border-black p-1 text-center font-bold">Hamali</td>
-                      <td className="border-r border-black p-1"></td><td className="border-r border-black p-1"></td>
-                      <td className="border-r border-black p-1"></td><td className="border-r border-black p-1"></td>
-                      <td className="border-r border-black p-1"></td><td className="border-r border-black p-1"></td>
-                      <td className="border-l border-r border-black p-1 text-right">{(selectedInvoice?.hamali || 0) > 0 ? (selectedInvoice?.hamali || 0).toFixed(2) : ''}</td>
-                    </tr>
-                    {/* Market Cess */}
-                    <tr style={{ fontSize: '10px', height: '1px' }}>
-                      <td className="border-l border-r border-black p-1"></td>
-                      <td className="border-r border-black p-1 text-center font-bold">Market Cess</td>
-                      <td className="border-r border-black p-1"></td><td className="border-r border-black p-1"></td>
-                      <td className="border-r border-black p-1"></td><td className="border-r border-black p-1"></td>
-                      <td className="border-r border-black p-1"></td><td className="border-r border-black p-1"></td>
-                      <td className="border-l border-r border-black p-1 text-right">{(selectedInvoice?.market_cess || 0) > 0 ? (selectedInvoice?.market_cess || 0).toFixed(2) : ''}</td>
-                    </tr>
-                    {/* OTHER EXP. */}
-                    <tr style={{ fontSize: '10px', height: '1px' }}>
-                      <td className="border-l border-r border-black p-1"></td>
-                      <td className="border-r border-black p-1 text-center font-bold">OTHER EXP.</td>
-                      <td className="border-r border-black p-1"></td><td className="border-r border-black p-1"></td>
-                      <td className="border-r border-black p-1"></td><td className="border-r border-black p-1"></td>
-                      <td className="border-r border-black p-1"></td><td className="border-r border-black p-1"></td>
-                      <td className="border-l border-r border-black p-1 text-right">{(selectedInvoice?.other_exp || 0) > 0 ? (selectedInvoice?.other_exp || 0).toFixed(2) : ''}</td>
-                    </tr>
-                    {/* C GST */}
-                    <tr style={{ fontSize: '10px', height: '1px' }}>
-                      <td className="border-l border-r border-black p-1"></td>
-                      <td className="border-r border-black p-1 text-center font-bold">C GST</td>
-                      <td className="border-r border-black p-1"></td><td className="border-r border-black p-1"></td>
-                      <td className="border-r border-black p-1"></td><td className="border-r border-black p-1"></td>
-                      <td className="border-r border-black p-1"></td><td className="border-r border-black p-1"></td>
-                      <td className="border-l border-r border-black p-1 text-right">{selectedInvoice?.gst_enabled === 1 && selectedInvoice.is_igst !== 1 && (selectedInvoice.cgst_amount || 0) > 0 ? (selectedInvoice.cgst_amount || 0).toFixed(2) : ''}</td>
-                    </tr>
-                    {/* S GST */}
-                    <tr style={{ fontSize: '10px', height: '1px' }}>
-                      <td className="border-l border-r border-black p-1"></td>
-                      <td className="border-r border-black p-1 text-center font-bold">S GST</td>
-                      <td className="border-r border-black p-1"></td><td className="border-r border-black p-1"></td>
-                      <td className="border-r border-black p-1"></td><td className="border-r border-black p-1"></td>
-                      <td className="border-r border-black p-1"></td><td className="border-r border-black p-1"></td>
-                      <td className="border-l border-r border-black p-1 text-right">{selectedInvoice?.gst_enabled === 1 && selectedInvoice.is_igst !== 1 && (selectedInvoice.sgst_amount || 0) > 0 ? (selectedInvoice.sgst_amount || 0).toFixed(2) : ''}</td>
-                    </tr>
-                    {/* I GST */}
-                    <tr style={{ fontSize: '10px', height: '1px' }}>
-                      <td className="border-l border-r border-black p-1"></td>
-                      <td className="border-r border-black p-1 text-center font-bold">I GST</td>
-                      <td className="border-r border-black p-1"></td><td className="border-r border-black p-1"></td>
-                      <td className="border-r border-black p-1"></td><td className="border-r border-black p-1"></td>
-                      <td className="border-r border-black p-1"></td><td className="border-r border-black p-1"></td>
-                      <td className="border-l border-r border-black p-1 text-right">{selectedInvoice?.gst_enabled === 1 && selectedInvoice.is_igst === 1 && (selectedInvoice.igst_amount || 0) > 0 ? (selectedInvoice.igst_amount || 0).toFixed(2) : ''}</td>
-                    </tr>
-                    {/* R/off */}
-                    <tr style={{ fontSize: '10px', height: '1px' }}>
-                      <td className="border-l border-r border-black p-1"></td>
-                      <td className="border-r border-black p-1 text-center font-bold">R/off</td>
-                      <td className="border-r border-black p-1"></td><td className="border-r border-black p-1"></td>
-                      <td className="border-r border-black p-1"></td><td className="border-r border-black p-1"></td>
-                      <td className="border-r border-black p-1"></td><td className="border-r border-black p-1"></td>
-                      <td className="border-l border-r border-black p-1 text-right">{(selectedInvoice?.round_off || 0) !== 0 ? (selectedInvoice?.round_off || 0).toFixed(2) : ''}</td>
-                    </tr>
-
-                    {/* TOTAL ROW */}
-                    <tr className="font-bold border border-black" style={{ fontSize: '10px', height: '1px' }}>
-                      <td className="border border-black p-1"></td>
-                      <td className="border border-black p-1">{t('Total :')}</td>
-                      <td className="border border-black p-1"></td>
-                      <td className="border border-black p-1"></td>
-                      <td className="border border-black p-1 text-center">
-                        {(() => {
-                           const bagU = new Set(['bag', 'pcs', 'box', 'pack', 'dozen', 'feet', 'meter', 'sqft', 'ltr', 'ml']);
-                           const totalBags = selectedItems.reduce((a, c) => a + (bagU.has((c.unit || '').toLowerCase()) ? c.quantity : 0), 0);
-                           return totalBags > 0 ? totalBags : '';
-                        })()}
-                      </td>
-                      <td className="border border-black p-1 text-right">
-                        {(() => {
-                           const bagU = new Set(['bag', 'pcs', 'box', 'pack', 'dozen', 'feet', 'meter', 'sqft', 'ltr', 'ml']);
-                           const totalKg = selectedItems.reduce((a, c) => {
-                             const u = (c.unit || '').toLowerCase();
-                             if (bagU.has(u) && Number(c.weight_kg) > 0) return a + (c.quantity * Number(c.weight_kg));
-                             if (u === 'kg') return a + c.quantity;
-                             if (u === 'g') return a + c.quantity / 1000;
-                             return a;
-                           }, 0);
-                           return totalKg > 0 ? totalKg.toFixed(3) : '';
-                        })()}
-                      </td>
-                      <td className="border border-black p-1"></td>
-                      <td className="border border-black p-1"></td>
-                      <td className="border border-black p-1 text-right">{selectedInvoice?.total_amount.toFixed(2)}</td>
-                    </tr>
-
-                    {/* HSN/SAC Summary Section */}
-                    {selectedInvoice?.gst_enabled === 1 && (
-                      <tr style={{ fontSize: '9px' }}>
-                        <td colSpan={9} className="border border-black p-0">
-                          <table className="w-full border-collapse">
-                            <thead>
-                              <tr className="border-b border-black font-bold bg-gray-50">
-                                <td className="p-1 border-r border-black text-center" style={{ width: '15%' }}>HSN/SAC</td>
-                                <td className="p-1 border-r border-black text-right" style={{ width: '15%' }}>{t('Taxable Value')}</td>
-                                {selectedInvoice.is_igst !== 1 ? (
-                                  <>
-                                    <td className="p-1 border-r border-black text-center" colSpan={2}>Central Tax</td>
-                                    <td className="p-1 border-r border-black text-center" colSpan={2}>State Tax</td>
-                                  </>
-                                ) : (
-                                  <td className="p-1 border-r border-black text-center" colSpan={2}>Integrated Tax</td>
-                                )}
-                                <td className="p-1 text-right" style={{ width: '15%' }}>{t('Total Tax')}</td>
-                              </tr>
-                              <tr className="border-b border-black font-bold text-[8px]">
-                                <td className="border-r border-black"></td><td className="border-r border-black"></td>
-                                {selectedInvoice.is_igst !== 1 ? (
-                                  <>
-                                    <td className="p-0.5 border-r border-black text-center" style={{ width: '8%' }}>{t('Rate')}</td><td className="p-0.5 border-r border-black text-right" style={{ width: '12%' }}>{t('Amount')}</td>
-                                    <td className="p-0.5 border-r border-black text-center" style={{ width: '8%' }}>{t('Rate')}</td><td className="p-0.5 border-r border-black text-right" style={{ width: '12%' }}>{t('Amount')}</td>
-                                  </>
-                                ) : (
-                                  <><td className="p-0.5 border-r border-black text-center" style={{ width: '10%' }}>{t('Rate')}</td><td className="p-0.5 border-r border-black text-right" style={{ width: '20%' }}>{t('Amount')}</td></>
-                                )}
-                                <td></td>
-                              </tr>
-                            </thead>
-                            <tbody>
-                              {(() => {
-                                const hsnMap = new Map<string, any>();
-                                selectedItems.forEach(item => {
-                                  if (!item.hsn_code || item.gst_rate === 0) return;
-                                  const key = `${item.hsn_code}_${item.gst_rate}`;
-                                  const existing = hsnMap.get(key);
-                                  if (existing) {
-                                    existing.taxable += item.taxable_amount || item.total;
-                                    existing.cgst += item.cgst_amount || 0;
-                                    existing.sgst += item.sgst_amount || 0;
-                                    existing.igst += item.igst_amount || 0;
-                                  } else {
-                                    hsnMap.set(key, {
-                                      hsn: item.hsn_code,
-                                      rate: item.gst_rate,
-                                      taxable: item.taxable_amount || item.total,
-                                      cgst: item.cgst_amount || 0,
-                                      sgst: item.sgst_amount || 0,
-                                      igst: item.igst_amount || 0
-                                    });
-                                  }
-                                });
-                                return Array.from(hsnMap.values()).map((row, i) => (
-                                  <tr key={i} className="border-b border-black">
-                                    <td className="p-1 border-r border-black text-center font-mono">{row.hsn}</td>
-                                    <td className="p-1 border-r border-black text-right">{row.taxable.toFixed(2)}</td>
-                                    {selectedInvoice.is_igst !== 1 ? (
-                                      <>
-                                        <td className="p-1 border-r border-black text-center">{(row.rate/2).toFixed(1)}%</td><td className="p-1 border-r border-black text-right">{row.cgst.toFixed(2)}</td>
-                                        <td className="p-1 border-r border-black text-center">{(row.rate/2).toFixed(1)}%</td><td className="p-1 border-r border-black text-right">{row.sgst.toFixed(2)}</td>
-                                      </>
-                                    ) : (
-                                      <><td className="p-1 border-r border-black text-center">{row.rate.toFixed(1)}%</td><td className="p-1 border-r border-black text-right">{row.igst.toFixed(2)}</td></>
-                                    )}
-                                    <td className="p-1 text-right">{(row.cgst + row.sgst + row.igst).toFixed(2)}</td>
-                                  </tr>
-                                ));
-                              })()}
-                            </tbody>
-                          </table>
-                        </td>
-                      </tr>
-                    )}
-
-                    {/* Amount in Words + Bank Details */}
-                    <tr style={{ fontSize: '10px', height: '1px' }}>
-                      <td colSpan={5} className="border border-black p-2 align-top">
-                        <p className="font-bold mb-1">{t('Amount in Words')} :</p>
-                        <p className="font-bold">{selectedInvoice ? amountInWords(selectedInvoice.total_amount, language) : ''}</p>
-                      </td>
-                      <td colSpan={3} className="border border-black p-0 align-top">
-                        <table className="w-full text-[10px] border-collapse">
-                          <tbody>
-                            {settings.bank_name && <tr><td className="font-bold p-1 whitespace-nowrap">Bank Name</td><td className="font-bold p-1">:</td><td className="p-1 font-bold">{settings.bank_name}</td></tr>}
-                            {settings.bank_account_no && <tr><td className="font-bold p-1 whitespace-nowrap">A/c No.</td><td className="font-bold p-1">:</td><td className="p-1 font-bold">{settings.bank_account_no}</td></tr>}
-                            {settings.bank_branch && <tr><td className="font-bold p-1 whitespace-nowrap">Branch</td><td className="font-bold p-1">:</td><td className="p-1 font-bold">{settings.bank_branch}</td></tr>}
-                            {settings.bank_ifsc && <tr><td className="font-bold p-1 whitespace-nowrap">IFSC Code</td><td className="font-bold p-1">:</td><td className="p-1 font-bold">{settings.bank_ifsc}</td></tr>}
-                          </tbody>
-                        </table>
-                      </td>
-                      <td colSpan={1} className="border border-black p-1 align-bottom text-right">
-                        <div className="font-bold text-[11px] pb-1 pr-1 whitespace-nowrap">
-                          For {selectedInvoice?.store_name || settings.store_name || 'Store'}
-                        </div>
-                      </td>
-                    </tr>
-
-                    {/* Certification */}
-                    <tr style={{ height: '1px' }}>
-                      <td colSpan={9} className="border border-black p-1">
-                        <p className="text-[8px] italic text-center">
-                          I/We here by certify that food / foods mentioned in this invoice is / are warranted to be of the nature & quality which it / these purports / purport to be at the time of delivery
-                        </p>
-                      </td>
-                    </tr>
-                  </tbody>
-                </table>
-              </div>
+              <InvoiceTemplate 
+                invoice={selectedInvoice as any} 
+                items={selectedItems as any} 
+                settings={settings} 
+                t={t as any} 
+              />
             )}
           </div>
         </DialogContent>

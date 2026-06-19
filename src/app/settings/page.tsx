@@ -230,6 +230,28 @@ export default function SettingsPage() {
     }
   };
 
+  const [updatingWa, setUpdatingWa] = useState(false);
+  const updateWhatsAppEngine = async () => {
+    if (!confirm('This will download the latest community patch for WhatsApp. It may take 1-2 minutes. Proceed?')) return;
+    setUpdatingWa(true);
+    const loadingToast = toast.loading('Updating WhatsApp engine... Please wait.');
+    try {
+      const res = await fetch('/api/settings/whatsapp/update', { method: 'POST' });
+      const data = await res.json();
+      if (res.ok) {
+        toast.success(data.message, { id: loadingToast });
+        alert('Update successful! Please restart the software (close the terminal window and start it again) to apply the changes.');
+      } else {
+        toast.error(data.error || 'Failed to update', { id: loadingToast });
+      }
+    } catch (error) {
+      toast.error('Connection failed while updating', { id: loadingToast });
+    } finally {
+      setUpdatingWa(false);
+    }
+  };
+
+
   if (loading) {
     return <div className="flex justify-center py-16"><div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary" /></div>;
   }
@@ -487,6 +509,21 @@ export default function SettingsPage() {
                   </div>
                 </div>
               )}
+
+              {/* Universal WhatsApp Settings / Maintenance */}
+              <div className="pt-4 border-t mt-4 flex flex-col gap-2">
+                <p className="text-xs text-slate-500 font-semibold uppercase tracking-wider">Maintenance</p>
+                <Button 
+                  variant="outline" 
+                  onClick={updateWhatsAppEngine} 
+                  disabled={updatingWa}
+                  className="w-full border-blue-200 text-blue-700 hover:bg-blue-50"
+                >
+                  <Download className="mr-2 h-4 w-4" /> 
+                  {updatingWa ? 'Downloading Update...' : 'Update WhatsApp Engine'}
+                </Button>
+                <p className="text-[10px] text-muted-foreground text-center">Use this if WhatsApp Web updates and breaks the connection.</p>
+              </div>
             </div>
 
             {/* Right Panel: Interactive Visuals */}

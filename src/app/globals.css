@@ -141,7 +141,8 @@ nextjs-portal {
  */
 .invoice-a4-wrapper {
   width: 210mm;
-  height: 273mm;
+  min-height: 100mm;
+  height: max-content;
   box-sizing: border-box;
   display: block;
   overflow: hidden;
@@ -151,7 +152,7 @@ nextjs-portal {
 /* Fills remaining height robustly */
 .invoice-a4-inner {
   width: 100%;
-  height: 100%;
+  height: max-content;
   display: block;
   box-sizing: border-box;
 }
@@ -159,7 +160,7 @@ nextjs-portal {
 /* Table fills the A4 height */
 .invoice-items-table {
   width: 100%;
-  height: 100%;
+  height: max-content;
   border-collapse: collapse;
 }
 
@@ -167,9 +168,9 @@ nextjs-portal {
   min-height: 20px;
 }
 
-/* Inside the A4 wrapper (print page), request 9999px height so it perfectly fills the table bounds without overflowing the document size */
+/* Spacer row no longer forces full height, lets table wrap contents */
 .invoice-a4-wrapper .invoice-spacer-row > td {
-  height: 9999px; 
+  height: auto; 
 }
 
 /* ── Print media ── */
@@ -187,14 +188,14 @@ nextjs-portal {
 
   /* Chain height all the way from html down to the wrapper */
   html {
-    height: 100% !important;
+    height: max-content !important;
     margin: 0 !important;
     padding: 0 !important;
     overflow: hidden !important; /* Forces clip at exactly 1 page */
   }
 
   body {
-    height: 100% !important;
+    height: max-content !important;
     margin: 0 !important;
     padding: 0 !important;
     background: white !important;
@@ -207,14 +208,14 @@ nextjs-portal {
     padding: 0 !important;
     margin: 0 !important;
     min-height: unset !important;
-    height: 100% !important;
+    height: max-content !important;
     display: block !important;
   }
 
   /* Wrapper fills the printable area set by @page margins */
   .invoice-a4-wrapper {
     width: 100% !important;
-    height: 100% !important;
+    height: max-content !important;
     min-height: unset !important;
     max-width: 100% !important;
     overflow: hidden !important;
@@ -227,7 +228,7 @@ nextjs-portal {
   /* Inner div fills wrapper */
   .invoice-a4-inner {
     width: 100% !important;
-    height: 100% !important;
+    height: max-content !important;
     padding: 0 !important;
     display: block !important;
   }
@@ -235,7 +236,7 @@ nextjs-portal {
   /* Table fills inner div — spacer row caps at remaining height */
   .invoice-items-table {
     width: 100% !important;
-    height: 100% !important;
+    height: max-content !important;
   }
 
   /* Force all borders/colors to print */
@@ -246,10 +247,7 @@ nextjs-portal {
     color: black !important;
   }
 
-  /* Override the 9999px trick ONLY for native printing to stop Chrome's 10 blank pages, using 98vh to ensure it pushes the footer perfectly to the bottom of exactly 1 page while leaving a tiny safety buffer. */
-  .invoice-a4-wrapper .invoice-spacer-row > td {
-    height: 98vh !important; 
-  }
+  
 
   /* Keep totals + footer together, never split across pages */
   .no-break,

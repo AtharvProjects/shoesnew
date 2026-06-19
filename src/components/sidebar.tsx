@@ -18,6 +18,7 @@ import {
   Settings,
   AlertTriangle,
   Store,
+  BookOpen,
 } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { useLanguage } from '@/components/LanguageProvider';
@@ -30,6 +31,7 @@ const navItems = [
   { href: '/invoices', label: 'Invoices', icon: FileText },
   { href: '/products', label: 'Products', icon: Package },
   { href: '/customers', label: 'Customers', icon: Users },
+  { href: '/dealers', label: 'Khatabook', icon: BookOpen },
   { href: '/reports', label: 'Reports', icon: BarChart3 },
   { href: '/low-stock', label: 'Low Stock', icon: AlertTriangle },
   { href: '/settings', label: 'Settings', icon: Settings },
